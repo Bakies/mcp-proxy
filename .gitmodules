@@ -1,0 +1,3 @@
+[submodule "vendor/mcp-go"]
+	path = vendor/mcp-go
+	url = git@github.com:Bakies/mcp-go.git

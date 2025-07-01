@@ -7,10 +7,12 @@ toolchain go1.24.1
 require (
 	github.com/TBXark/confstore v0.0.4
 	github.com/TBXark/optional-go v0.0.1
-	github.com/mark3labs/mcp-go v0.28.0
+	github.com/mark3labs/mcp-go v0.29.0
 	github.com/prometheus/client_golang v1.22.0
 	golang.org/x/sync v0.14.0
 )
+
+replace github.com/mark3labs/mcp-go => ./vendor/mcp-go
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect

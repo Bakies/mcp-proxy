@@ -1,8 +1,7 @@
 FROM golang:1.23 AS builder
 WORKDIR /app
-COPY go.mod go.sum ./
-RUN go mod download
 COPY . .
+RUN GOPROXY=direct go mod download
 RUN make build
 
 FROM node:lts-bookworm-slim AS node
