@@ -191,8 +191,31 @@ func (c *Client) addToolsToServer(ctx context.Context, mcpServer *server.MCPServ
 		for _, tool := range tools.Tools {
 			if filterFunc(tool.Name) {
 				log.Printf("<%s> Adding tool %s", c.name, tool.Name)
-				// Direct callback - simplify to fix types mismatch
-				mcpServer.AddTool(tool, c.client.CallTool)
+				
+				// Wrap the CallTool function to add metrics
+				wrappedCallTool := func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					toolName := tool.Name
+					startTime := time.Now()
+					
+					// Track the tool call
+					GetMetrics().toolCalls.WithLabelValues(c.name, toolName).Inc()
+					
+					// Call the original function
+					resp, err := c.client.CallTool(ctx, request)
+					
+					// Record the duration
+					duration := time.Since(startTime).Seconds()
+					GetMetrics().toolCallDuration.WithLabelValues(c.name, toolName).Observe(duration)
+					
+					// Track errors if any
+					if err != nil {
+						GetMetrics().toolCallErrors.WithLabelValues(c.name, toolName, "call_error").Inc()
+					}
+					
+					return resp, err
+				}
+				
+				mcpServer.AddTool(tool, wrappedCallTool)
 			}
 		}
 		if tools.NextCursor == "" {
