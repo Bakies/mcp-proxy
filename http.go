@@ -231,6 +231,92 @@ func startHTTPServer(config *Config) error {
 		})
 	}
 
+	// Add /services endpoint for frontend API compatibility
+	httpMux.HandleFunc("/services", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		
+		if r.Method != "GET" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		
+		// Build services list from config
+		services := make([]map[string]interface{}, 0, len(config.McpServers))
+		for name, clientConfig := range config.McpServers {
+			service := map[string]interface{}{
+				"name": name,
+			}
+			
+			// Determine service type and add relevant fields
+			if clientConfig.URL != "" {
+				service["type"] = "sse"
+				service["url"] = clientConfig.URL
+			} else if clientConfig.Command != "" {
+				service["type"] = "stdio" 
+				service["command"] = clientConfig.Command
+				if len(clientConfig.Args) > 0 {
+					service["args"] = clientConfig.Args
+				}
+			} else {
+				service["type"] = "http"
+			}
+			
+			services = append(services, service)
+		}
+		
+		response := map[string]interface{}{
+			"services": services,
+		}
+		
+		json.NewEncoder(w).Encode(response)
+	})
+
+	// Add stub Kubernetes API endpoints for frontend compatibility
+	// These return empty lists since this server doesn't implement full K8s integration
+	httpMux.HandleFunc("/api/v1/mcps", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		
+		// Return empty list for now - this would be implemented by the K8s operator
+		response := map[string]interface{}{
+			"items": []map[string]interface{}{},
+		}
+		json.NewEncoder(w).Encode(response)
+	})
+	
+	httpMux.HandleFunc("/api/v1/mcpgroups", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		
+		// Return empty list for now - this would be implemented by the K8s operator  
+		response := map[string]interface{}{
+			"items": []map[string]interface{}{},
+		}
+		json.NewEncoder(w).Encode(response)
+	})
+
 	// Add /paths endpoint to show available paths
 	httpMux.HandleFunc("/paths", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

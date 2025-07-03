@@ -12,8 +12,6 @@ require (
 	golang.org/x/sync v0.14.0
 )
 
-replace github.com/mark3labs/mcp-go => ./vendor/mcp-go
-
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

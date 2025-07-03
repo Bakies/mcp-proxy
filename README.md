@@ -29,9 +29,9 @@ go install github.com/TBXark/mcp-proxy@latest
 
 > The Docker image supports two MCP calling methods by default: `npx` and `uvx`.
 ```bash
-docker run -d -p 9090:9090 -v /path/to/config.json:/config/config.json ghcr.io/tbxark/mcp-proxy:latest
+docker run -d -p 9090:9090 -v /path/to/config.json:/config/config.json ghcr.io/bakies/mcp-proxy:latest
 # or 
-docker run -d -p 9090:9090 ghcr.io/tbxark/mcp-proxy:latest --config https://example.com/path/to/config.json
+docker run -d -p 9090:9090 ghcr.io/bakies/mcp-proxy:latest --config https://example.com/path/to/config.json
 ```
 
 ## Configuration

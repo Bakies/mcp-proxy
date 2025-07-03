@@ -1,6 +1,6 @@
 services:
   app:
-    image: ghcr.io/tbxark/mcp-proxy:latest
+    image: ghcr.io/bakies/mcp-proxy:latest
     pull_policy: always
     volumes:
       - ./config.json:/config/config.json
@@ -21,7 +21,7 @@ services:
 #    command: ["caddy", "file-server", "--root", "/config"]
 #
 #  app:
-#    image: ghcr.io/tbxark/mcp-proxy:latest
+#    image: ghcr.io/bakies/mcp-proxy:latest
 #    pull_policy: always
 #    ports:
 #      - "9090:9090"

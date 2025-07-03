@@ -15,7 +15,7 @@ buildLinuxX86:
 
 .PHONY: buildImage
 buildImage:
-	docker buildx build --platform=linux/amd64,linux/arm64 -t ghcr.io/tbxark/map-proxy:latest . --push --provenance=false
+	docker buildx build --platform=linux/amd64,linux/arm64 -t ghcr.io/bakies/mcp-proxy:latest . --push --provenance=false
 
 .PHONY: lint
 lint:
