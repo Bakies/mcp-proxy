@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"time"
 
@@ -131,16 +132,27 @@ func (c *Client) addToMCPServer(ctx context.Context, clientInfo mcp.Implementati
 }
 
 func (c *Client) startPingTask(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
+	interval := 30 * time.Second
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-PingLoop:
+
+	failCount := 0
 	for {
 		select {
 		case <-ctx.Done():
 			log.Printf("<%s> Context done, stopping ping", c.name)
-			break PingLoop
+			return
 		case <-ticker.C:
-			_ = c.client.Ping(ctx)
+			if err := c.client.Ping(ctx); err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return
+				}
+				failCount++
+				log.Printf("<%s> MCP Ping failed: %v (count=%d)", c.name, err, failCount)
+			} else if failCount > 0 {
+				log.Printf("<%s> MCP Ping recovered after %d failures", c.name, failCount)
+				failCount = 0
+			}
 		}
 	}
 }
@@ -341,10 +353,10 @@ func (c *Client) Close() error {
 type Server struct {
 	tokens    []string
 	mcpServer *server.MCPServer
-	sseServer *server.SSEServer
+	handler   http.Handler
 }
 
-func newMCPServer(name, version, baseURL string, clientConfig *MCPClientConfigV2) *Server {
+func newMCPServer(name string, serverConfig *MCPProxyConfigV2, clientConfig *MCPClientConfigV2) (*Server, error) {
 	serverOpts := []server.ServerOption{
 		server.WithResourceCapabilities(true, true),
 		server.WithRecovery(),
@@ -355,22 +367,35 @@ func newMCPServer(name, version, baseURL string, clientConfig *MCPClientConfigV2
 	}
 	mcpServer := server.NewMCPServer(
 		name,
-		version,
+		serverConfig.Version,
 		serverOpts...,
 	)
-	sseServer := server.NewSSEServer(mcpServer,
-		server.WithStaticBasePath(name),
-		server.WithBaseURL(baseURL),
-	)
 
+	var handler http.Handler
+
+	switch serverConfig.Type {
+	case MCPServerTypeSSE:
+		handler = server.NewSSEServer(
+			mcpServer,
+			server.WithStaticBasePath(name),
+			server.WithBaseURL(serverConfig.BaseURL),
+		)
+	case MCPServerTypeStreamable:
+		handler = server.NewStreamableHTTPServer(
+			mcpServer,
+			server.WithStateLess(true),
+		)
+	default:
+		return nil, fmt.Errorf("unknown server type: %s", serverConfig.Type)
+	}
 	srv := &Server{
 		mcpServer: mcpServer,
-		sseServer: sseServer,
+		handler:   handler,
 	}
 
 	if clientConfig.Options != nil && len(clientConfig.Options.AuthTokens) > 0 {
 		srv.tokens = clientConfig.Options.AuthTokens
 	}
 
-	return srv
+	return srv, nil
 }
