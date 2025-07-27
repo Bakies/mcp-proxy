@@ -17,7 +17,6 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"golang.org/x/sync/errgroup"
 )
 
 type MiddlewareFunc func(http.Handler) http.Handler
@@ -144,7 +143,6 @@ func startHTTPServer(config *Config) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var errorGroup errgroup.Group
 	httpMux := http.NewServeMux()
 	
 	// Configure metrics based on configuration
@@ -178,6 +176,76 @@ func startHTTPServer(config *Config) error {
 		Name: config.McpProxy.Name,
 	}
 
+	// Function to register a service with the HTTP server
+	registerService := func(name string, mcpClient *Client, server *Server, clientConfig *MCPClientConfigV2) {
+		middlewares := make([]MiddlewareFunc, 0)
+		middlewares = append(middlewares, recoverMiddleware(name))
+		
+		// Add metrics middleware if enabled
+		metricsEnabled := true
+		if config.McpProxy.Options != nil && config.McpProxy.Options.Metrics != nil {
+			metricsEnabled = config.McpProxy.Options.Metrics.Enabled
+		}
+		if metricsEnabled {
+			middlewares = append(middlewares, metricsMiddleware())
+		}
+		
+		if clientConfig.Options.LogEnabled.OrElse(false) {
+			middlewares = append(middlewares, loggerMiddleware(name))
+		}
+		if len(clientConfig.Options.AuthTokens) > 0 {
+			middlewares = append(middlewares, newAuthMiddleware(clientConfig.Options.AuthTokens))
+		}
+		mcpRoute := path.Join(baseURL.Path, name)
+		if !strings.HasPrefix(mcpRoute, "/") {
+			mcpRoute = "/" + mcpRoute
+		}
+		if !strings.HasSuffix(mcpRoute, "/") {
+			mcpRoute += "/"
+		}
+		log.Printf("<%s> Handling requests at %s", name, mcpRoute)
+		httpMux.Handle(mcpRoute, chainMiddleware(server.handler, middlewares...))
+		httpServer.RegisterOnShutdown(func() {
+			log.Printf("<%s> Shutting down", name)
+			_ = mcpClient.Close()
+		})
+	}
+
+	// Function to attempt connection and register service if successful
+	tryConnectAndRegister := func(name string, mcpClient *Client, server *Server, clientConfig *MCPClientConfigV2) bool {
+		log.Printf("<%s> Connecting", name)
+		addErr := mcpClient.addToMCPServer(ctx, info, server.mcpServer)
+		if addErr == nil {
+			log.Printf("<%s> Connected", name)
+			registerService(name, mcpClient, server, clientConfig)
+			return true
+		}
+		log.Printf("<%s> Failed to connect: %v", name, addErr)
+		return false
+	}
+
+	// Function to retry connection in background
+	retryInBackground := func(name string, mcpClient *Client, server *Server, clientConfig *MCPClientConfigV2) {
+		go func() {
+			retryDelay := 5 * time.Second
+			maxRetries := 50 // More retries since it's in background
+			
+			for attempt := 1; attempt <= maxRetries; attempt++ {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(retryDelay):
+					log.Printf("<%s> Retry attempt %d/%d", name, attempt, maxRetries)
+					if tryConnectAndRegister(name, mcpClient, server, clientConfig) {
+						log.Printf("<%s> Successfully connected on retry attempt %d", name, attempt)
+						return
+					}
+				}
+			}
+			log.Printf("<%s> Failed to connect after %d background retry attempts", name, maxRetries)
+		}()
+	}
+
 	for name, clientConfig := range config.McpServers {
 		mcpClient, err := newMCPClient(name, clientConfig)
 		if err != nil {
@@ -187,51 +255,16 @@ func startHTTPServer(config *Config) error {
 		if err != nil {
 			return err
 		}
-		errorGroup.Go(func() error {
-			log.Printf("<%s> Connecting", name)
-			addErr := mcpClient.addToMCPServer(ctx, info, server.mcpServer)
-			if addErr != nil {
-				log.Printf("<%s> Failed to add client to server: %v", name, addErr)
-				if clientConfig.Options.PanicIfInvalid.OrElse(false) {
-					return addErr
-				}
-				return nil
+		
+		// Try to connect once immediately
+		if !tryConnectAndRegister(name, mcpClient, server, clientConfig) {
+			// If initial connection fails, check if we should panic or retry in background
+			if clientConfig.Options.PanicIfInvalid.OrElse(false) {
+				return fmt.Errorf("failed to connect to required service: %s", name)
 			}
-			log.Printf("<%s> Connected", name)
-
-			middlewares := make([]MiddlewareFunc, 0)
-			middlewares = append(middlewares, recoverMiddleware(name))
-			
-			// Add metrics middleware if enabled
-			metricsEnabled := true
-			if config.McpProxy.Options != nil && config.McpProxy.Options.Metrics != nil {
-				metricsEnabled = config.McpProxy.Options.Metrics.Enabled
-			}
-			if metricsEnabled {
-				middlewares = append(middlewares, metricsMiddleware())
-			}
-			
-			if clientConfig.Options.LogEnabled.OrElse(false) {
-				middlewares = append(middlewares, loggerMiddleware(name))
-			}
-			if len(clientConfig.Options.AuthTokens) > 0 {
-				middlewares = append(middlewares, newAuthMiddleware(clientConfig.Options.AuthTokens))
-			}
-			mcpRoute := path.Join(baseURL.Path, name)
-			if !strings.HasPrefix(mcpRoute, "/") {
-				mcpRoute = "/" + mcpRoute
-			}
-			if !strings.HasSuffix(mcpRoute, "/") {
-				mcpRoute += "/"
-			}
-			log.Printf("<%s> Handling requests at %s", name, mcpRoute)
-			httpMux.Handle(mcpRoute, chainMiddleware(server.handler, middlewares...))
-			httpServer.RegisterOnShutdown(func() {
-				log.Printf("<%s> Shutting down", name)
-				_ = mcpClient.Close()
-			})
-			return nil
-		})
+			// Start background retries for this service
+			retryInBackground(name, mcpClient, server, clientConfig)
+		}
 	}
 
 	// Add /services endpoint for frontend API compatibility
@@ -359,38 +392,16 @@ func startHTTPServer(config *Config) error {
 		w.Write(response)
 	})
 	
-	go func() {
-		err := errorGroup.Wait()
-		if err != nil {
-			log.Fatalf("Failed to add clients: %v", err)
-		}
-		log.Printf("All clients initialized")
-		
-		// Log available paths
-		log.Println("Available API paths:")
-		for name := range config.McpServers {
-			mcpRoute := path.Join(baseURL.Path, name)
-			if !strings.HasPrefix(mcpRoute, "/") {
-				mcpRoute = "/" + mcpRoute
-			}
-			if !strings.HasSuffix(mcpRoute, "/") {
-				mcpRoute += "/"
-			}
-			
-			// Log the SSE endpoint (this is the main connection point clients should use)
-			sseEndpoint := mcpRoute + "sse"
-			log.Printf("- MCP SSE Endpoint: %s", sseEndpoint)
-			
-			// Log the message endpoint
-			messageEndpoint := mcpRoute + "message"
-			log.Printf("  └─ Message Endpoint: %s (used internally)", messageEndpoint)
-		}
-		log.Printf("- Health Check: /health")
-		if metricsEnabled {
-			log.Printf("- Metrics: %s", metricsPath)
-		}
-		log.Printf("- API Paths: /paths")
-	}()
+	// Log basic server info immediately
+	log.Printf("MCP Proxy initialized")
+	log.Printf("Basic API paths available:")
+	log.Printf("- Health Check: /health")
+	if metricsEnabled {
+		log.Printf("- Metrics: %s", metricsPath)
+	}
+	log.Printf("- API Paths: /paths")
+	log.Printf("- Services: /services")
+	log.Printf("MCP services will be available at their respective endpoints as they connect")
 
 	go func() {
 		log.Printf("Starting SSE server")
